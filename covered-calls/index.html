@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Calculadora de Covered Calls</title>
+  <style>
+    :root {
+      --page:           #f9f9f7;
+      --surface-1:      #fcfcfb;
+      --text-primary:   #0b0b0b;
+      --text-secondary: #52514e;
+      --text-muted:     #898781;
+      --grid:           #e1e0d9;
+      --baseline:       #c3c2b7;
+      --border:         rgba(11,11,11,0.10);
+      --series-1:       #2a78d6;  /* covered call */
+      --series-2:       #1baf7a;  /* solo acciones */
+      --good:           #006300;
+      --bad:            #d03b3b;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --page:           #0d0d0d;
+        --surface-1:      #1a1a19;
+        --text-primary:   #ffffff;
+        --text-secondary: #c3c2b7;
+        --text-muted:     #898781;
+        --grid:           #2c2c2a;
+        --baseline:       #383835;
+        --border:         rgba(255,255,255,0.10);
+        --series-1:       #3987e5;
+        --series-2:       #199e70;
+        --good:           #0ca30c;
+        --bad:            #e66767;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--page);
+      color: var(--text-primary);
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      line-height: 1.5;
+    }
+    .wrap { max-width: 960px; margin: 0 auto; padding: 24px 16px 48px; }
+    h1 { font-size: 22px; margin: 0 0 4px; }
+    .subtitle { color: var(--text-secondary); margin: 0 0 20px; font-size: 14px; }
+    .subtitle a { color: inherit; }
+
+    .card {
+      background: var(--surface-1);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+
+    /* Inputs — one row above the content they scope */
+    .inputs { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; }
+    .inputs label { display: block; font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
+    .inputs input {
+      width: 100%; padding: 7px 9px; font-size: 14px;
+      color: var(--text-primary); background: var(--page);
+      border: 1px solid var(--border); border-radius: 6px;
+      font-variant-numeric: tabular-nums;
+    }
+    .inputs input:focus { outline: 2px solid var(--series-1); outline-offset: -1px; }
+
+    /* Stat tiles */
+    .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
+    .tile {
+      background: var(--surface-1); border: 1px solid var(--border);
+      border-radius: 10px; padding: 12px 14px;
+    }
+    .tile .label { font-size: 12px; color: var(--text-secondary); }
+    .tile .value { font-size: 22px; font-weight: 600; margin-top: 2px; }
+    .tile .sub { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+
+    /* Chart */
+    .chart-head { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; }
+    .chart-title { font-size: 15px; font-weight: 600; }
+    .legend { display: flex; gap: 16px; font-size: 13px; color: var(--text-secondary); }
+    .legend .key { display: inline-flex; align-items: center; gap: 6px; }
+    .legend .swatch { width: 16px; height: 2px; border-radius: 1px; display: inline-block; }
+    .chart-box { position: relative; }
+    svg { display: block; width: 100%; height: auto; }
+    .tooltip {
+      position: absolute; pointer-events: none; display: none;
+      background: var(--surface-1); border: 1px solid var(--border);
+      border-radius: 8px; padding: 8px 10px; font-size: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.12); min-width: 170px; z-index: 2;
+    }
+    .tooltip .tt-x { color: var(--text-muted); margin-bottom: 4px; }
+    .tooltip .tt-row { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
+    .tooltip .tt-key { width: 12px; height: 2px; border-radius: 1px; flex: none; }
+    .tooltip .tt-val { font-weight: 600; font-variant-numeric: tabular-nums; }
+    .tooltip .tt-name { color: var(--text-secondary); margin-left: auto; padding-left: 10px; }
+
+    /* Table */
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: right; padding: 6px 10px; border-bottom: 1px solid var(--grid); font-variant-numeric: tabular-nums; }
+    th:first-child, td:first-child { text-align: left; }
+    th { color: var(--text-secondary); font-weight: 500; }
+    td.pos { color: var(--good); }
+    td.neg { color: var(--bad); }
+    .table-scroll { overflow-x: auto; }
+
+    .note { font-size: 12px; color: var(--text-muted); margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Calculadora de Covered Calls</h1>
+    <p class="subtitle">
+      Verifica cada operación antes de vender el call — reglas y sistema completo en
+      <a href="ESTRATEGIA.md">ESTRATEGIA.md</a>.
+    </p>
+
+    <div class="card">
+      <div class="inputs">
+        <div><label for="precio">Precio actual ($)</label><input id="precio" type="number" step="0.01" min="0.01" value="100" /></div>
+        <div><label for="costo">Costo base ($/acción)</label><input id="costo" type="number" step="0.01" min="0.01" value="100" /></div>
+        <div><label for="strike">Strike ($)</label><input id="strike" type="number" step="0.01" min="0.01" value="105" /></div>
+        <div><label for="prima">Prima ($/acción)</label><input id="prima" type="number" step="0.01" min="0" value="1.50" /></div>
+        <div><label for="dte">Días a vencimiento</label><input id="dte" type="number" step="1" min="1" value="35" /></div>
+        <div><label for="contratos">Contratos</label><input id="contratos" type="number" step="1" min="1" value="1" /></div>
+      </div>
+    </div>
+
+    <div class="tiles" id="tiles"></div>
+
+    <div class="card">
+      <div class="chart-head">
+        <div class="chart-title">Resultado al vencimiento según precio de la acción</div>
+        <div class="legend">
+          <span class="key"><span class="swatch" style="background:var(--series-1)"></span>Covered call</span>
+          <span class="key"><span class="swatch" style="background:var(--series-2)"></span>Solo acciones</span>
+        </div>
+      </div>
+      <div class="chart-box" id="chartBox">
+        <svg id="chart" viewBox="0 0 900 420" role="img" aria-label="Diagrama de payoff: covered call frente a solo acciones"></svg>
+        <div class="tooltip" id="tooltip"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="chart-title" style="margin-bottom:8px">Tabla de escenarios al vencimiento</div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Escenario</th><th>Precio</th><th>P/L covered call</th><th>P/L solo acciones</th><th>Diferencia</th>
+            </tr>
+          </thead>
+          <tbody id="scenarios"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <p class="note">
+      P/L al vencimiento, sobre el costo base indicado, sin comisiones ni impuestos.
+      Covered call = mín(precio, strike) − costo base + prima, por acción × contratos × 100.
+      Esta herramienta no constituye asesoría financiera.
+    </p>
+  </div>
+
+  <script>
+    "use strict";
+    const $ = (id) => document.getElementById(id);
+    const inputs = ["precio", "costo", "strike", "prima", "dte", "contratos"].map($);
+    const SVGNS = "http://www.w3.org/2000/svg";
+    const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+    const fmtUSD = (v, dec = 0) =>
+      (v < 0 ? "−$" : "$") + Math.abs(v).toLocaleString("es", { minimumFractionDigits: dec, maximumFractionDigits: dec });
+    const fmtPct = (v, dec = 2) => (v * 100).toFixed(dec).replace(".", ",") + "%";
+
+    function readParams() {
+      const p = {
+        precio: parseFloat($("precio").value),
+        costo: parseFloat($("costo").value),
+        strike: parseFloat($("strike").value),
+        prima: parseFloat($("prima").value),
+        dte: parseInt($("dte").value, 10),
+        contratos: parseInt($("contratos").value, 10),
+      };
+      const positivos = ["precio", "costo", "strike", "dte", "contratos"];
+      if (positivos.some((k) => !isFinite(p[k]) || p[k] <= 0)) return null;
+      if (!isFinite(p.prima) || p.prima < 0) return null;
+      p.shares = p.contratos * 100;
+      return p;
+    }
+
+    // P/L per share at expiration
+    const plCC = (S, p) => Math.min(S, p.strike) - p.costo + p.prima;
+    const plStock = (S, p) => S - p.costo;
+
+    /* ---------- Stat tiles ---------- */
+    function tile(label, value, sub, cls) {
+      const d = document.createElement("div");
+      d.className = "tile";
+      const l = document.createElement("div"); l.className = "label"; l.textContent = label;
+      const v = document.createElement("div"); v.className = "value"; v.textContent = value;
+      if (cls) v.style.color = css(cls);
+      d.append(l, v);
+      if (sub) { const s = document.createElement("div"); s.className = "sub"; s.textContent = sub; d.append(s); }
+      return d;
+    }
+
+    function renderTiles(p) {
+      const box = $("tiles");
+      box.textContent = "";
+      const ingreso = p.prima * p.shares;
+      const rendCiclo = p.prima / p.costo;
+      const anualizado = rendCiclo * (365 / p.dte);
+      const breakeven = p.costo - p.prima;
+      const retAsignado = (p.strike - p.costo + p.prima) / p.costo;
+      box.append(
+        tile("Ingreso por prima", fmtUSD(ingreso, 2), p.contratos + " contrato(s) · " + p.shares + " acciones"),
+        tile("Rendimiento del ciclo", fmtPct(rendCiclo), "prima / costo base"),
+        tile("Anualizado (solo primas)", fmtPct(anualizado, 1), "a " + p.dte + " días"),
+        tile("Breakeven", fmtUSD(breakeven, 2), "costo base − prima"),
+        tile("Retorno si asignado", fmtPct(retAsignado), "en " + p.dte + " días", retAsignado >= 0 ? "--good" : "--bad")
+      );
+    }
+
+    /* ---------- Chart ---------- */
+    const M = { top: 20, right: 130, bottom: 40, left: 78 };
+    const W = 900, H = 420;
+    let chartState = null; // { xs, ccVals, stVals, sx, sy, p }
+
+    function niceTicks(min, max, count) {
+      const span = max - min;
+      const step0 = span / count;
+      const mag = Math.pow(10, Math.floor(Math.log10(step0)));
+      const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => span / s <= count) || 10 * mag;
+      const ticks = [];
+      for (let t = Math.ceil(min / step) * step; t <= max + 1e-9; t += step) ticks.push(Math.round(t * 100) / 100);
+      return ticks;
+    }
+
+    function el(name, attrs, text) {
+      const e = document.createElementNS(SVGNS, name);
+      for (const k in attrs) e.setAttribute(k, attrs[k]);
+      if (text !== undefined) e.textContent = text;
+      return e;
+    }
+
+    function renderChart(p) {
+      const svg = $("chart");
+      svg.textContent = "";
+
+      const xMin = p.precio * 0.7, xMax = Math.max(p.precio * 1.3, p.strike * 1.1);
+      const N = 120;
+      const xs = Array.from({ length: N + 1 }, (_, i) => xMin + (i * (xMax - xMin)) / N);
+      const ccVals = xs.map((S) => plCC(S, p) * p.shares);
+      const stVals = xs.map((S) => plStock(S, p) * p.shares);
+      const yMin = Math.min(...ccVals, ...stVals, 0), yMax = Math.max(...ccVals, ...stVals, 0);
+      const yPad = (yMax - yMin) * 0.08 || 1;
+
+      const sx = (v) => M.left + ((v - xMin) / (xMax - xMin)) * (W - M.left - M.right);
+      const sy = (v) => H - M.bottom - ((v - (yMin - yPad)) / (yMax + yPad - (yMin - yPad))) * (H - M.top - M.bottom);
+      chartState = { xs, ccVals, stVals, sx, sy, p, xMin, xMax };
+
+      // gridlines + y ticks
+      for (const t of niceTicks(yMin - yPad, yMax + yPad, 6)) {
+        svg.append(el("line", { x1: M.left, x2: W - M.right, y1: sy(t), y2: sy(t), stroke: "var(--grid)", "stroke-width": 1 }));
+        svg.append(el("text", { x: M.left - 8, y: sy(t) + 4, "text-anchor": "end", "font-size": 12, fill: "var(--text-muted)" }, fmtUSD(t)));
+      }
+      // zero baseline (stronger than grid)
+      svg.append(el("line", { x1: M.left, x2: W - M.right, y1: sy(0), y2: sy(0), stroke: "var(--baseline)", "stroke-width": 1 }));
+      // x ticks
+      for (const t of niceTicks(xMin, xMax, 8)) {
+        svg.append(el("text", { x: sx(t), y: H - M.bottom + 20, "text-anchor": "middle", "font-size": 12, fill: "var(--text-muted)" }, fmtUSD(t)));
+      }
+      // strike annotation (muted reference, not a series)
+      if (p.strike >= xMin && p.strike <= xMax) {
+        svg.append(el("line", { x1: sx(p.strike), x2: sx(p.strike), y1: M.top, y2: H - M.bottom, stroke: "var(--baseline)", "stroke-width": 1, "stroke-dasharray": "none", opacity: 0.6 }));
+        svg.append(el("text", { x: sx(p.strike), y: M.top - 6, "text-anchor": "middle", "font-size": 11, fill: "var(--text-muted)" }, "strike " + fmtUSD(p.strike)));
+      }
+
+      // series lines (2px, round)
+      const path = (vals) => vals.map((v, i) => (i ? "L" : "M") + sx(xs[i]).toFixed(1) + " " + sy(v).toFixed(1)).join(" ");
+      svg.append(el("path", { d: path(stVals), fill: "none", stroke: "var(--series-2)", "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+      svg.append(el("path", { d: path(ccVals), fill: "none", stroke: "var(--series-1)", "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+
+      // end markers (≥8px, 2px surface ring) + direct end labels in text ink
+      const ends = [
+        { v: ccVals[N], color: "var(--series-1)", name: "Covered call" },
+        { v: stVals[N], color: "var(--series-2)", name: "Solo acciones" },
+      ];
+      for (const e of ends) {
+        svg.append(el("circle", { cx: sx(xMax), cy: sy(e.v), r: 6, fill: e.color, stroke: "var(--surface-1)", "stroke-width": 2 }));
+        svg.append(el("text", { x: sx(xMax) + 10, y: sy(e.v) - 4, "font-size": 12, fill: "var(--text-secondary)" }, e.name));
+        svg.append(el("text", { x: sx(xMax) + 10, y: sy(e.v) + 11, "font-size": 12, "font-weight": 600, fill: "var(--text-primary)" }, fmtUSD(e.v)));
+      }
+
+      // crosshair + hover layer
+      const cross = el("line", { y1: M.top, y2: H - M.bottom, stroke: "var(--baseline)", "stroke-width": 1, visibility: "hidden" });
+      const dotCC = el("circle", { r: 5, fill: "var(--series-1)", stroke: "var(--surface-1)", "stroke-width": 2, visibility: "hidden" });
+      const dotST = el("circle", { r: 5, fill: "var(--series-2)", stroke: "var(--surface-1)", "stroke-width": 2, visibility: "hidden" });
+      const hit = el("rect", { x: M.left, y: M.top, width: W - M.left - M.right, height: H - M.top - M.bottom, fill: "transparent" });
+      svg.append(cross, dotCC, dotST, hit);
+
+      const tt = $("tooltip");
+      const hide = () => { tt.style.display = "none"; for (const n of [cross, dotCC, dotST]) n.setAttribute("visibility", "hidden"); };
+      hit.addEventListener("pointerleave", hide);
+      hit.addEventListener("pointermove", (ev) => {
+        const box = svg.getBoundingClientRect();
+        const px = ((ev.clientX - box.left) / box.width) * W;
+        const frac = Math.min(1, Math.max(0, (px - M.left) / (W - M.left - M.right)));
+        const i = Math.round(frac * N);
+        const X = sx(xs[i]);
+        cross.setAttribute("x1", X); cross.setAttribute("x2", X); cross.setAttribute("visibility", "visible");
+        dotCC.setAttribute("cx", X); dotCC.setAttribute("cy", sy(ccVals[i])); dotCC.setAttribute("visibility", "visible");
+        dotST.setAttribute("cx", X); dotST.setAttribute("cy", sy(stVals[i])); dotST.setAttribute("visibility", "visible");
+
+        tt.textContent = "";
+        const xRow = document.createElement("div"); xRow.className = "tt-x";
+        xRow.textContent = "Precio al vencimiento: " + fmtUSD(xs[i], 2);
+        tt.append(xRow);
+        for (const s of [
+          { name: "Covered call", val: ccVals[i], color: css("--series-1") },
+          { name: "Solo acciones", val: stVals[i], color: css("--series-2") },
+        ]) {
+          const row = document.createElement("div"); row.className = "tt-row";
+          const key = document.createElement("span"); key.className = "tt-key"; key.style.background = s.color;
+          const val = document.createElement("span"); val.className = "tt-val"; val.textContent = fmtUSD(s.val, 2);
+          const name = document.createElement("span"); name.className = "tt-name"; name.textContent = s.name;
+          row.append(key, val, name); tt.append(row);
+        }
+        tt.style.display = "block";
+        const boxEl = $("chartBox").getBoundingClientRect();
+        let left = ((X / W) * boxEl.width) + 14;
+        if (left + tt.offsetWidth > boxEl.width - 8) left -= tt.offsetWidth + 28;
+        tt.style.left = left + "px";
+        tt.style.top = Math.max(8, ((ev.clientY - boxEl.top) - tt.offsetHeight - 12)) + "px";
+      });
+    }
+
+    /* ---------- Scenario table ---------- */
+    function renderTable(p) {
+      const rows = [
+        ["Caída fuerte (−20%)", p.precio * 0.8],
+        ["Caída (−10%)", p.precio * 0.9],
+        ["Leve caída (−5%)", p.precio * 0.95],
+        ["Sin cambio", p.precio],
+        ["Leve subida (+5%)", p.precio * 1.05],
+        ["En el strike", p.strike],
+        ["Subida (+10%)", p.precio * 1.1],
+        ["Subida fuerte (+20%)", p.precio * 1.2],
+      ].sort((a, b) => a[1] - b[1]);
+
+      const tb = $("scenarios");
+      tb.textContent = "";
+      for (const [name, S] of rows) {
+        const cc = plCC(S, p) * p.shares, st = plStock(S, p) * p.shares;
+        const tr = document.createElement("tr");
+        const cells = [
+          [name, ""],
+          [fmtUSD(S, 2), ""],
+          [fmtUSD(cc, 2), cc >= 0 ? "pos" : "neg"],
+          [fmtUSD(st, 2), st >= 0 ? "pos" : "neg"],
+          [fmtUSD(cc - st, 2), cc - st >= 0 ? "pos" : "neg"],
+        ];
+        for (const [txt, cls] of cells) {
+          const td = document.createElement("td");
+          td.textContent = txt;
+          if (cls) td.className = cls;
+          tr.append(td);
+        }
+        tb.append(tr);
+      }
+    }
+
+    function render() {
+      const p = readParams();
+      if (!p) return;
+      renderTiles(p);
+      renderChart(p);
+      renderTable(p);
+    }
+
+    for (const i of inputs) i.addEventListener("input", render);
+    matchMedia("(prefers-color-scheme: dark)").addEventListener("change", render);
+    render();
+  </script>
+</body>
+</html>
