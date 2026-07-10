@@ -1,0 +1,119 @@
+{
+  "type": "FLOW",
+  "displayName": "CC · 01 Apertura de ciclo (mensual)",
+  "description": "Sistema de covered calls — ver covered-calls/ESTRATEGIA.md",
+  "tags": [
+    "covered-calls"
+  ],
+  "template": {
+    "displayName": "CC · 01 Apertura de ciclo (mensual)",
+    "trigger": {
+      "name": "trigger",
+      "type": "PIECE_TRIGGER",
+      "valid": true,
+      "displayName": "Día 1 de cada mes, 14:00 UTC",
+      "settings": {
+        "pieceName": "@activepieces/piece-schedule",
+        "pieceVersion": "~0.1.5",
+        "pieceType": "OFFICIAL",
+        "packageType": "REGISTRY",
+        "triggerName": "cron_expression",
+        "input": {
+          "cronExpression": "0 14 1 * *",
+          "timezone": "UTC"
+        },
+        "inputUiInfo": {}
+      },
+      "nextAction": {
+        "name": "step_1",
+        "type": "PIECE",
+        "valid": true,
+        "displayName": "Leer hoja Posiciones (CSV)",
+        "settings": {
+          "pieceName": "@activepieces/piece-http",
+          "pieceVersion": "~0.3.0",
+          "pieceType": "OFFICIAL",
+          "packageType": "REGISTRY",
+          "actionName": "send_request",
+          "input": {
+            "method": "GET",
+            "url": "https://docs.google.com/spreadsheets/d/PEGA_AQUI_EL_ID_DE_TU_HOJA/gviz/tq?tqx=out:csv&sheet=Posiciones",
+            "headers": {},
+            "queryParams": {},
+            "failsafe": false,
+            "use_proxy": false
+          },
+          "inputUiInfo": {},
+          "errorHandlingOptions": {
+            "retryOnFailure": {
+              "value": true
+            },
+            "continueOnFailure": {
+              "value": false
+            }
+          }
+        },
+        "nextAction": {
+          "name": "step_2",
+          "type": "CODE",
+          "valid": true,
+          "displayName": "Buscar candidatos (30-45 DTE, delta 0.20-0.30)",
+          "settings": {
+            "sourceCode": {
+              "code": "\n// Parser CSV mínimo (soporta comillas). Devuelve array de objetos usando la fila 1 como cabeceras.\nconst parseCsv = (texto) => {\n  const filas = []; let fila = [], celda = '', dentro = false;\n  const s = String(texto ?? '');\n  for (let i = 0; i < s.length; i++) {\n    const c = s[i];\n    if (dentro) {\n      if (c === '\"' && s[i + 1] === '\"') { celda += '\"'; i++; }\n      else if (c === '\"') dentro = false;\n      else celda += c;\n    } else if (c === '\"') dentro = true;\n    else if (c === ',') { fila.push(celda); celda = ''; }\n    else if (c === '\\n') { fila.push(celda); filas.push(fila); fila = []; celda = ''; }\n    else if (c !== '\\r') celda += c;\n  }\n  if (celda !== '' || fila.length) { fila.push(celda); filas.push(fila); }\n  const [cab, ...datos] = filas.filter((f) => f.some((x) => x !== ''));\n  return (datos ?? []).map((f) => Object.fromEntries(cab.map((h, i) => [h.trim().toLowerCase(), (f[i] ?? '').trim()])));\n};\nconst num = (v) => { const n = parseFloat(String(v).replace(',', '.')); return isFinite(n) ? n : 0; };\n\nexport const code = async (inputs) => {\n  const base = inputs.entorno === 'produccion' ? 'https://api.tradier.com' : 'https://sandbox.tradier.com';\n  const headers = { Authorization: 'Bearer ' + inputs.tradierToken, Accept: 'application/json' };\n  const get = async (ruta) => (await fetch(base + ruta, { headers })).json();\n  const hoy = new Date();\n  const dias = (f) => Math.round((new Date(f + 'T21:00:00Z') - hoy) / 86400000);\n\n  const posiciones = parseCsv(inputs.posicionesCsv);\n  const libres = posiciones.filter((p) => num(p.acciones) >= 100 && String(p.call_abierto).toLowerCase() !== 'si');\n  const lineas = [];\n\n  for (const p of libres) {\n    const ticker = String(p.ticker).toUpperCase();\n    const costoBase = num(p.costo_base);\n    try {\n      const exp = await get('/v1/markets/options/expirations?symbol=' + ticker);\n      const fechas = [].concat(exp?.expirations?.date ?? []);\n      // Regla del sistema: vencimiento 30-45 DTE\n      const fecha = fechas.find((f) => dias(f) >= 30 && dias(f) <= 45);\n      if (!fecha) { lineas.push(ticker + ': sin vencimiento en la ventana 30-45 DTE.'); continue; }\n\n      const cad = await get('/v1/markets/options/chains?symbol=' + ticker + '&expiration=' + fecha + '&greeks=true');\n      const calls = [].concat(cad?.options?.option ?? []).filter((o) => o.option_type === 'call');\n      // Reglas: delta 0.20-0.30, strike >= costo base, rendimiento del ciclo >= 0.5%\n      const candidatos = calls\n        .filter((o) => o.greeks && o.greeks.delta >= 0.20 && o.greeks.delta <= 0.30)\n        .filter((o) => o.strike >= costoBase && o.bid > 0 && o.bid / costoBase >= 0.005)\n        .sort((a, b) => b.bid / b.strike - a.bid / a.strike)\n        .slice(0, 3);\n\n      if (!candidatos.length) { lineas.push(ticker + ': ningun strike cumple las reglas este ciclo (no operar tambien es una decision).'); continue; }\n      lineas.push(ticker + ' - vencimiento ' + fecha + ' (' + dias(fecha) + ' DTE):');\n      for (const o of candidatos) {\n        const rend = (o.bid / costoBase) * 100;\n        const anual = rend * (365 / dias(fecha));\n        lineas.push('  strike ' + o.strike + ' | delta ' + o.greeks.delta.toFixed(2) + ' | bid $' + o.bid.toFixed(2) +\n          ' | ciclo ' + rend.toFixed(2) + '% | anualizado ' + anual.toFixed(1) + '%');\n      }\n    } catch (e) {\n      lineas.push(ticker + ': error consultando datos (' + e.message + ').');\n    }\n  }\n\n  const resumen = lineas.length\n    ? 'Candidatos del ciclo (reglas: 30-45 DTE, delta 0.20-0.30, strike >= costo base, ciclo >= 0.5%):\\n\\n' + lineas.join('\\n') +\n      '\\n\\nAntes de vender: revisa earnings del periodo y verifica en la calculadora covered-calls/index.html.'\n    : 'No hay acciones libres (100+ sin call abierto) este ciclo.';\n  return { resumen, hayCandidatos: lineas.length > 0 };\n};\n",
+              "packageJson": "{}"
+            },
+            "input": {
+              "posicionesCsv": "{{step_1['body']}}",
+              "tradierToken": "PEGA_AQUI_TU_TOKEN_TRADIER",
+              "entorno": "sandbox"
+            },
+            "inputUiInfo": {},
+            "errorHandlingOptions": {
+              "retryOnFailure": {
+                "value": false
+              },
+              "continueOnFailure": {
+                "value": false
+              }
+            }
+          },
+          "nextAction": {
+            "name": "step_3",
+            "type": "PIECE",
+            "valid": true,
+            "displayName": "Enviar candidatos por correo",
+            "settings": {
+              "pieceName": "@activepieces/piece-gmail",
+              "pieceVersion": "~0.8.0",
+              "pieceType": "OFFICIAL",
+              "packageType": "REGISTRY",
+              "actionName": "send_email",
+              "input": {
+                "auth": "{{connections['gmail']}}",
+                "receiver": [
+                  "TU_CORREO@gmail.com"
+                ],
+                "subject": "CC · Apertura de ciclo — candidatos para vender calls",
+                "body_text": "{{step_2['resumen']}}",
+                "body_html": ""
+              },
+              "inputUiInfo": {},
+              "errorHandlingOptions": {
+                "retryOnFailure": {
+                  "value": true
+                },
+                "continueOnFailure": {
+                  "value": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "valid": true,
+    "schemaVersion": "1"
+  },
+  "blogUrl": ""
+}

@@ -1,0 +1,135 @@
+{
+  "type": "FLOW",
+  "displayName": "CC · 05 Alerta de earnings (diaria)",
+  "description": "Sistema de covered calls — ver covered-calls/ESTRATEGIA.md",
+  "tags": [
+    "covered-calls"
+  ],
+  "template": {
+    "displayName": "CC · 05 Alerta de earnings (diaria)",
+    "trigger": {
+      "name": "trigger",
+      "type": "PIECE_TRIGGER",
+      "valid": true,
+      "displayName": "Lunes a viernes, 12:00 UTC",
+      "settings": {
+        "pieceName": "@activepieces/piece-schedule",
+        "pieceVersion": "~0.1.5",
+        "pieceType": "OFFICIAL",
+        "packageType": "REGISTRY",
+        "triggerName": "cron_expression",
+        "input": {
+          "cronExpression": "0 12 * * 1-5",
+          "timezone": "UTC"
+        },
+        "inputUiInfo": {}
+      },
+      "nextAction": {
+        "name": "step_1",
+        "type": "PIECE",
+        "valid": true,
+        "displayName": "Leer hoja Posiciones (CSV)",
+        "settings": {
+          "pieceName": "@activepieces/piece-http",
+          "pieceVersion": "~0.3.0",
+          "pieceType": "OFFICIAL",
+          "packageType": "REGISTRY",
+          "actionName": "send_request",
+          "input": {
+            "method": "GET",
+            "url": "https://docs.google.com/spreadsheets/d/PEGA_AQUI_EL_ID_DE_TU_HOJA/gviz/tq?tqx=out:csv&sheet=Posiciones",
+            "headers": {},
+            "queryParams": {},
+            "failsafe": false,
+            "use_proxy": false
+          },
+          "inputUiInfo": {},
+          "errorHandlingOptions": {
+            "retryOnFailure": {
+              "value": true
+            },
+            "continueOnFailure": {
+              "value": false
+            }
+          }
+        },
+        "nextAction": {
+          "name": "step_2",
+          "type": "CODE",
+          "valid": true,
+          "displayName": "Buscar earnings antes del vencimiento",
+          "settings": {
+            "sourceCode": {
+              "code": "\n// Parser CSV mínimo (soporta comillas). Devuelve array de objetos usando la fila 1 como cabeceras.\nconst parseCsv = (texto) => {\n  const filas = []; let fila = [], celda = '', dentro = false;\n  const s = String(texto ?? '');\n  for (let i = 0; i < s.length; i++) {\n    const c = s[i];\n    if (dentro) {\n      if (c === '\"' && s[i + 1] === '\"') { celda += '\"'; i++; }\n      else if (c === '\"') dentro = false;\n      else celda += c;\n    } else if (c === '\"') dentro = true;\n    else if (c === ',') { fila.push(celda); celda = ''; }\n    else if (c === '\\n') { fila.push(celda); filas.push(fila); fila = []; celda = ''; }\n    else if (c !== '\\r') celda += c;\n  }\n  if (celda !== '' || fila.length) { fila.push(celda); filas.push(fila); }\n  const [cab, ...datos] = filas.filter((f) => f.some((x) => x !== ''));\n  return (datos ?? []).map((f) => Object.fromEntries(cab.map((h, i) => [h.trim().toLowerCase(), (f[i] ?? '').trim()])));\n};\nconst num = (v) => { const n = parseFloat(String(v).replace(',', '.')); return isFinite(n) ? n : 0; };\n\nexport const code = async (inputs) => {\n  const posiciones = parseCsv(inputs.posicionesCsv).filter((p) => String(p.call_abierto).toLowerCase() === 'si');\n  if (!posiciones.length) return { hayAvisos: false, resumen: 'Sin calls abiertos.' };\n\n  const hoy = new Date().toISOString().slice(0, 10);\n  const avisos = [];\n  for (const p of posiciones) {\n    const ticker = String(p.ticker).toUpperCase();\n    const venc = String(p.vencimiento);\n    try {\n      const r = await fetch('https://finnhub.io/api/v1/calendar/earnings?from=' + hoy + '&to=' + venc +\n        '&symbol=' + ticker + '&token=' + inputs.finnhubToken);\n      const datos = await r.json();\n      for (const e of datos?.earningsCalendar ?? []) {\n        // Regla: sin earnings antes del vencimiento del ciclo\n        if (e.date >= hoy && e.date <= venc)\n          avisos.push(ticker + ': earnings el ' + e.date + ' ANTES del vencimiento ' + venc +\n            '. Valora recomprar el call antes del evento.');\n      }\n    } catch (err) {\n      avisos.push(ticker + ': error consultando earnings (' + err.message + ').');\n    }\n  }\n  return { hayAvisos: avisos.length > 0, resumen: avisos.join('\\n') || 'Sin earnings en los ciclos abiertos.' };\n};\n",
+              "packageJson": "{}"
+            },
+            "input": {
+              "posicionesCsv": "{{step_1['body']}}",
+              "finnhubToken": "PEGA_AQUI_TU_TOKEN_FINNHUB"
+            },
+            "inputUiInfo": {},
+            "errorHandlingOptions": {
+              "retryOnFailure": {
+                "value": false
+              },
+              "continueOnFailure": {
+                "value": false
+              }
+            }
+          },
+          "nextAction": {
+            "name": "step_3",
+            "type": "BRANCH",
+            "valid": true,
+            "displayName": "¿Hay earnings en el ciclo?",
+            "settings": {
+              "conditions": [
+                [
+                  {
+                    "operator": "BOOLEAN_IS_TRUE",
+                    "firstValue": "{{step_2['hayAvisos']}}"
+                  }
+                ]
+              ],
+              "inputUiInfo": {}
+            },
+            "onSuccessAction": {
+              "name": "step_4",
+              "type": "PIECE",
+              "valid": true,
+              "displayName": "Enviar aviso de earnings",
+              "settings": {
+                "pieceName": "@activepieces/piece-gmail",
+                "pieceVersion": "~0.8.0",
+                "pieceType": "OFFICIAL",
+                "packageType": "REGISTRY",
+                "actionName": "send_email",
+                "input": {
+                  "auth": "{{connections['gmail']}}",
+                  "receiver": [
+                    "TU_CORREO@gmail.com"
+                  ],
+                  "subject": "CC · AVISO — earnings antes del vencimiento",
+                  "body_text": "{{step_2['resumen']}}",
+                  "body_html": ""
+                },
+                "inputUiInfo": {},
+                "errorHandlingOptions": {
+                  "retryOnFailure": {
+                    "value": true
+                  },
+                  "continueOnFailure": {
+                    "value": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "valid": true,
+    "schemaVersion": "1"
+  },
+  "blogUrl": ""
+}

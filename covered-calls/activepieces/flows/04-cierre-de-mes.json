@@ -1,0 +1,118 @@
+{
+  "type": "FLOW",
+  "displayName": "CC · 04 Cierre de mes (métricas)",
+  "description": "Sistema de covered calls — ver covered-calls/ESTRATEGIA.md",
+  "tags": [
+    "covered-calls"
+  ],
+  "template": {
+    "displayName": "CC · 04 Cierre de mes (métricas)",
+    "trigger": {
+      "name": "trigger",
+      "type": "PIECE_TRIGGER",
+      "valid": true,
+      "displayName": "Día 1 de cada mes, 13:00 UTC (informe del mes anterior)",
+      "settings": {
+        "pieceName": "@activepieces/piece-schedule",
+        "pieceVersion": "~0.1.5",
+        "pieceType": "OFFICIAL",
+        "packageType": "REGISTRY",
+        "triggerName": "cron_expression",
+        "input": {
+          "cronExpression": "0 13 1 * *",
+          "timezone": "UTC"
+        },
+        "inputUiInfo": {}
+      },
+      "nextAction": {
+        "name": "step_1",
+        "type": "PIECE",
+        "valid": true,
+        "displayName": "Leer hoja Diario (CSV)",
+        "settings": {
+          "pieceName": "@activepieces/piece-http",
+          "pieceVersion": "~0.3.0",
+          "pieceType": "OFFICIAL",
+          "packageType": "REGISTRY",
+          "actionName": "send_request",
+          "input": {
+            "method": "GET",
+            "url": "https://docs.google.com/spreadsheets/d/PEGA_AQUI_EL_ID_DE_TU_HOJA/gviz/tq?tqx=out:csv&sheet=Diario",
+            "headers": {},
+            "queryParams": {},
+            "failsafe": false,
+            "use_proxy": false
+          },
+          "inputUiInfo": {},
+          "errorHandlingOptions": {
+            "retryOnFailure": {
+              "value": true
+            },
+            "continueOnFailure": {
+              "value": false
+            }
+          }
+        },
+        "nextAction": {
+          "name": "step_2",
+          "type": "CODE",
+          "valid": true,
+          "displayName": "Calcular métricas del mes",
+          "settings": {
+            "sourceCode": {
+              "code": "\n// Parser CSV mínimo (soporta comillas). Devuelve array de objetos usando la fila 1 como cabeceras.\nconst parseCsv = (texto) => {\n  const filas = []; let fila = [], celda = '', dentro = false;\n  const s = String(texto ?? '');\n  for (let i = 0; i < s.length; i++) {\n    const c = s[i];\n    if (dentro) {\n      if (c === '\"' && s[i + 1] === '\"') { celda += '\"'; i++; }\n      else if (c === '\"') dentro = false;\n      else celda += c;\n    } else if (c === '\"') dentro = true;\n    else if (c === ',') { fila.push(celda); celda = ''; }\n    else if (c === '\\n') { fila.push(celda); filas.push(fila); fila = []; celda = ''; }\n    else if (c !== '\\r') celda += c;\n  }\n  if (celda !== '' || fila.length) { fila.push(celda); filas.push(fila); }\n  const [cab, ...datos] = filas.filter((f) => f.some((x) => x !== ''));\n  return (datos ?? []).map((f) => Object.fromEntries(cab.map((h, i) => [h.trim().toLowerCase(), (f[i] ?? '').trim()])));\n};\nconst num = (v) => { const n = parseFloat(String(v).replace(',', '.')); return isFinite(n) ? n : 0; };\n\nexport const code = async (inputs) => {\n  const ops = parseCsv(inputs.diarioCsv);\n  const ahora = new Date();\n  const mes = new Date(Date.UTC(ahora.getUTCFullYear(), ahora.getUTCMonth() - 1, 1)); // mes anterior\n  const clave = mes.toISOString().slice(0, 7);\n  const delMes = ops.filter((o) => String(o.fecha_cierre || o.fecha_venta).startsWith(clave));\n\n  if (!delMes.length) return { resumen: 'Sin operaciones registradas en ' + clave + '.' };\n\n  const capital = num(inputs.capital);\n  let primaBruta = 0, recompras = 0, cerradas = 0, asignadas = 0, tomas5070 = 0;\n  for (const o of delMes) {\n    const mult = (num(o.contratos) || 1) * 100;\n    primaBruta += num(o.prima_cobrada) * mult;\n    if (o.fecha_cierre) {\n      cerradas++;\n      recompras += num(o.costo_recompra) * mult;\n      if (String(o.asignado).toLowerCase() === 'si') asignadas++;\n      const cap = num(o.prima_cobrada) > 0 ? 1 - num(o.costo_recompra) / num(o.prima_cobrada) : 0;\n      if (cap >= 0.5 && cap <= 0.75) tomas5070++;\n    }\n  }\n  const neta = primaBruta - recompras;\n  const tasaAsig = cerradas ? asignadas / cerradas : 0;\n  const lineas = [\n    'Informe del mes ' + clave + ' (' + delMes.length + ' operaciones, ' + cerradas + ' cerradas):',\n    'Prima bruta cobrada: $' + primaBruta.toFixed(2),\n    'Recompras: $' + recompras.toFixed(2),\n    'Prima neta: $' + neta.toFixed(2) + (capital > 0 ? ' (' + ((neta / capital) * 100).toFixed(2) + '% sobre capital de $' + capital + ')' : ''),\n    'Tasa de asignacion: ' + (tasaAsig * 100).toFixed(0) + '%',\n    'Cierres en la banda 50-70%: ' + tomas5070 + ' de ' + cerradas,\n  ];\n  // Regla del registro: asignacion sostenida > 30% => deltas demasiado altos\n  if (tasaAsig > 0.3) lineas.push('AVISO: tasa de asignacion > 30% — estas vendiendo deltas demasiado altos.');\n  return { resumen: lineas.join('\\n') };\n};\n",
+              "packageJson": "{}"
+            },
+            "input": {
+              "diarioCsv": "{{step_1['body']}}",
+              "capital": "PEGA_AQUI_TU_CAPITAL_TOTAL"
+            },
+            "inputUiInfo": {},
+            "errorHandlingOptions": {
+              "retryOnFailure": {
+                "value": false
+              },
+              "continueOnFailure": {
+                "value": false
+              }
+            }
+          },
+          "nextAction": {
+            "name": "step_3",
+            "type": "PIECE",
+            "valid": true,
+            "displayName": "Enviar informe mensual",
+            "settings": {
+              "pieceName": "@activepieces/piece-gmail",
+              "pieceVersion": "~0.8.0",
+              "pieceType": "OFFICIAL",
+              "packageType": "REGISTRY",
+              "actionName": "send_email",
+              "input": {
+                "auth": "{{connections['gmail']}}",
+                "receiver": [
+                  "TU_CORREO@gmail.com"
+                ],
+                "subject": "CC · Informe mensual del sistema",
+                "body_text": "{{step_2['resumen']}}",
+                "body_html": ""
+              },
+              "inputUiInfo": {},
+              "errorHandlingOptions": {
+                "retryOnFailure": {
+                  "value": true
+                },
+                "continueOnFailure": {
+                  "value": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "valid": true,
+    "schemaVersion": "1"
+  },
+  "blogUrl": ""
+}

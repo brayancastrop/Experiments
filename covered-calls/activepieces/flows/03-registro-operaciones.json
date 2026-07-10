@@ -1,0 +1,96 @@
+{
+  "type": "FLOW",
+  "displayName": "CC · 03 Registro de operaciones (webhook)",
+  "description": "Sistema de covered calls — ver covered-calls/ESTRATEGIA.md",
+  "tags": [
+    "covered-calls"
+  ],
+  "template": {
+    "displayName": "CC · 03 Registro de operaciones (webhook)",
+    "trigger": {
+      "name": "trigger",
+      "type": "PIECE_TRIGGER",
+      "valid": true,
+      "displayName": "Webhook: registrar operación",
+      "settings": {
+        "pieceName": "@activepieces/piece-webhook",
+        "pieceVersion": "~0.1.1",
+        "pieceType": "OFFICIAL",
+        "packageType": "REGISTRY",
+        "triggerName": "catch_request",
+        "input": {},
+        "inputUiInfo": {}
+      },
+      "nextAction": {
+        "name": "step_1",
+        "type": "CODE",
+        "valid": true,
+        "displayName": "Normalizar la operación",
+        "settings": {
+          "sourceCode": {
+            "code": "\nexport const code = async (inputs) => {\n  const b = inputs.payload ?? {};\n  const hoy = new Date().toISOString().slice(0, 10);\n  const num = (v) => { const n = parseFloat(String(v ?? '').replace(',', '.')); return isFinite(n) ? n : ''; };\n  const prima = num(b.prima_cobrada), recompra = num(b.costo_recompra), contratos = num(b.contratos) || 1;\n  const neto = prima !== '' ? ((prima - (recompra === '' ? 0 : recompra)) * contratos * 100).toFixed(2) : '';\n  return {\n    fecha_venta: b.fecha_venta || hoy,\n    ticker: String(b.ticker ?? '').toUpperCase(),\n    contratos,\n    strike: num(b.strike),\n    dte: num(b.dte),\n    prima_cobrada: prima,\n    delta_apertura: num(b.delta_apertura),\n    fecha_cierre: b.fecha_cierre ?? '',\n    costo_recompra: recompra,\n    resultado_neto: neto,\n    asignado: String(b.asignado ?? 'no').toLowerCase(),\n    notas: String(b.notas ?? ''),\n  };\n};\n",
+            "packageJson": "{}"
+          },
+          "input": {
+            "payload": "{{trigger['body']}}"
+          },
+          "inputUiInfo": {},
+          "errorHandlingOptions": {
+            "retryOnFailure": {
+              "value": false
+            },
+            "continueOnFailure": {
+              "value": false
+            }
+          }
+        },
+        "nextAction": {
+          "name": "step_2",
+          "type": "PIECE",
+          "valid": true,
+          "displayName": "Añadir fila al Diario",
+          "settings": {
+            "pieceName": "@activepieces/piece-google-sheets",
+            "pieceVersion": "~0.10.0",
+            "pieceType": "OFFICIAL",
+            "packageType": "REGISTRY",
+            "actionName": "insert_row",
+            "input": {
+              "auth": "{{connections['google-sheets']}}",
+              "spreadsheet_id": "PEGA_AQUI_EL_ID_DE_TU_HOJA",
+              "sheet_id": "PEGA_AQUI_EL_GID_DE_LA_PESTANA_DIARIO",
+              "as_string": false,
+              "first_row_headers": true,
+              "values": {
+                "fecha_venta": "{{step_1['fecha_venta']}}",
+                "ticker": "{{step_1['ticker']}}",
+                "contratos": "{{step_1['contratos']}}",
+                "strike": "{{step_1['strike']}}",
+                "dte": "{{step_1['dte']}}",
+                "prima_cobrada": "{{step_1['prima_cobrada']}}",
+                "delta_apertura": "{{step_1['delta_apertura']}}",
+                "fecha_cierre": "{{step_1['fecha_cierre']}}",
+                "costo_recompra": "{{step_1['costo_recompra']}}",
+                "resultado_neto": "{{step_1['resultado_neto']}}",
+                "asignado": "{{step_1['asignado']}}",
+                "notas": "{{step_1['notas']}}"
+              }
+            },
+            "inputUiInfo": {},
+            "errorHandlingOptions": {
+              "retryOnFailure": {
+                "value": true
+              },
+              "continueOnFailure": {
+                "value": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "valid": true,
+    "schemaVersion": "1"
+  },
+  "blogUrl": ""
+}

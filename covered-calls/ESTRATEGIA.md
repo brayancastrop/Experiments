@@ -179,12 +179,17 @@ sostenidamente, estás vendiendo deltas demasiado altos.
 
 ---
 
-## Herramienta incluida
+## Herramientas incluidas
 
 📊 **[Calculadora de covered calls](index.html)** — introduce precio, strike,
 prima y días al vencimiento y obtén: ingreso por prima, rendimiento del ciclo,
 anualizado, breakeven, retorno si asignado, diagrama de payoff comparado con
 solo tener las acciones, y tabla de escenarios.
+
+⚙️ **[Orquestación en Activepieces](activepieces/README.md)** — carpeta con 5
+flujos importables que automatizan el ciclo: candidatos al abrir ciclo,
+vigilancia de las reglas 50–70% y de strikes amenazados, registro de
+operaciones por webhook, informe mensual de métricas y alertas de earnings.
 
 *Nada de lo anterior constituye asesoría financiera. Opera con capital que
 puedas mantener invertido y entiende cada regla antes de usarla.*

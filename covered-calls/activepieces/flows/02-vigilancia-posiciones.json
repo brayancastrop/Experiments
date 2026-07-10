@@ -1,0 +1,136 @@
+{
+  "type": "FLOW",
+  "displayName": "CC · 02 Vigilancia de posiciones (lun y jue)",
+  "description": "Sistema de covered calls — ver covered-calls/ESTRATEGIA.md",
+  "tags": [
+    "covered-calls"
+  ],
+  "template": {
+    "displayName": "CC · 02 Vigilancia de posiciones (lun y jue)",
+    "trigger": {
+      "name": "trigger",
+      "type": "PIECE_TRIGGER",
+      "valid": true,
+      "displayName": "Lunes y jueves, 14:00 UTC",
+      "settings": {
+        "pieceName": "@activepieces/piece-schedule",
+        "pieceVersion": "~0.1.5",
+        "pieceType": "OFFICIAL",
+        "packageType": "REGISTRY",
+        "triggerName": "cron_expression",
+        "input": {
+          "cronExpression": "0 14 * * 1,4",
+          "timezone": "UTC"
+        },
+        "inputUiInfo": {}
+      },
+      "nextAction": {
+        "name": "step_1",
+        "type": "PIECE",
+        "valid": true,
+        "displayName": "Leer hoja Posiciones (CSV)",
+        "settings": {
+          "pieceName": "@activepieces/piece-http",
+          "pieceVersion": "~0.3.0",
+          "pieceType": "OFFICIAL",
+          "packageType": "REGISTRY",
+          "actionName": "send_request",
+          "input": {
+            "method": "GET",
+            "url": "https://docs.google.com/spreadsheets/d/PEGA_AQUI_EL_ID_DE_TU_HOJA/gviz/tq?tqx=out:csv&sheet=Posiciones",
+            "headers": {},
+            "queryParams": {},
+            "failsafe": false,
+            "use_proxy": false
+          },
+          "inputUiInfo": {},
+          "errorHandlingOptions": {
+            "retryOnFailure": {
+              "value": true
+            },
+            "continueOnFailure": {
+              "value": false
+            }
+          }
+        },
+        "nextAction": {
+          "name": "step_2",
+          "type": "CODE",
+          "valid": true,
+          "displayName": "Evaluar reglas 50-70% y strike amenazado",
+          "settings": {
+            "sourceCode": {
+              "code": "\n// Parser CSV mínimo (soporta comillas). Devuelve array de objetos usando la fila 1 como cabeceras.\nconst parseCsv = (texto) => {\n  const filas = []; let fila = [], celda = '', dentro = false;\n  const s = String(texto ?? '');\n  for (let i = 0; i < s.length; i++) {\n    const c = s[i];\n    if (dentro) {\n      if (c === '\"' && s[i + 1] === '\"') { celda += '\"'; i++; }\n      else if (c === '\"') dentro = false;\n      else celda += c;\n    } else if (c === '\"') dentro = true;\n    else if (c === ',') { fila.push(celda); celda = ''; }\n    else if (c === '\\n') { fila.push(celda); filas.push(fila); fila = []; celda = ''; }\n    else if (c !== '\\r') celda += c;\n  }\n  if (celda !== '' || fila.length) { fila.push(celda); filas.push(fila); }\n  const [cab, ...datos] = filas.filter((f) => f.some((x) => x !== ''));\n  return (datos ?? []).map((f) => Object.fromEntries(cab.map((h, i) => [h.trim().toLowerCase(), (f[i] ?? '').trim()])));\n};\nconst num = (v) => { const n = parseFloat(String(v).replace(',', '.')); return isFinite(n) ? n : 0; };\n\nexport const code = async (inputs) => {\n  const base = inputs.entorno === 'produccion' ? 'https://api.tradier.com' : 'https://sandbox.tradier.com';\n  const headers = { Authorization: 'Bearer ' + inputs.tradierToken, Accept: 'application/json' };\n  const get = async (ruta) => (await fetch(base + ruta, { headers })).json();\n\n  // Simbolo OCC: TICKER + AAMMDD + C + strike*1000 con 8 digitos\n  const occ = (t, venc, strike) => {\n    const d = new Date(venc + 'T00:00:00Z');\n    const p2 = (n) => String(n).padStart(2, '0');\n    return t.toUpperCase() + String(d.getUTCFullYear()).slice(2) + p2(d.getUTCMonth() + 1) + p2(d.getUTCDate()) +\n      'C' + String(Math.round(strike * 1000)).padStart(8, '0');\n  };\n\n  const posiciones = parseCsv(inputs.posicionesCsv).filter((p) => String(p.call_abierto).toLowerCase() === 'si');\n  if (!posiciones.length) return { hayAlertas: false, resumen: 'Sin calls abiertos.' };\n\n  const alertas = [], estado = [];\n  for (const p of posiciones) {\n    const ticker = String(p.ticker).toUpperCase();\n    const strike = num(p.strike), prima = num(p.prima_cobrada);\n    try {\n      const q = await get('/v1/markets/quotes?symbols=' + ticker + ',' + occ(ticker, p.vencimiento, strike) + '&greeks=false');\n      const cotiz = [].concat(q?.quotes?.quote ?? []);\n      const accion = cotiz.find((x) => x.symbol === ticker);\n      const opcion = cotiz.find((x) => x.symbol !== ticker);\n      const precio = accion?.last ?? 0;\n      const marca = opcion ? (opcion.bid + opcion.ask) / 2 : null;\n      const capturado = marca !== null && prima > 0 ? (prima - marca) / prima : null;\n\n      estado.push(ticker + ': accion $' + precio.toFixed(2) + ' | strike ' + strike +\n        (capturado !== null ? ' | prima capturada ' + (capturado * 100).toFixed(0) + '%' : ''));\n\n      // Regla 5.1: recomprar al capturar 50-70% de la prima\n      if (capturado !== null && capturado >= 0.5)\n        alertas.push('RECOMPRA ' + ticker + ': capturaste ' + (capturado * 100).toFixed(0) + '% de la prima. Cierra y libera la posicion.');\n      // Regla 5.2: strike amenazado -> roll por credito o aceptar asignacion\n      if (precio >= strike * 0.98)\n        alertas.push('STRIKE AMENAZADO ' + ticker + ': accion $' + precio.toFixed(2) + ' vs strike ' + strike +\n          '. Decide: roll por credito neto (si quieres las acciones) o dejar asignar.');\n    } catch (e) {\n      alertas.push(ticker + ': error consultando cotizaciones (' + e.message + ').');\n    }\n  }\n\n  const resumen = (alertas.length ? 'ACCIONES REQUERIDAS:\\n' + alertas.join('\\n') + '\\n\\n' : '') +\n    'Estado:\\n' + estado.join('\\n');\n  return { hayAlertas: alertas.length > 0, resumen };\n};\n",
+              "packageJson": "{}"
+            },
+            "input": {
+              "posicionesCsv": "{{step_1['body']}}",
+              "tradierToken": "PEGA_AQUI_TU_TOKEN_TRADIER",
+              "entorno": "sandbox"
+            },
+            "inputUiInfo": {},
+            "errorHandlingOptions": {
+              "retryOnFailure": {
+                "value": false
+              },
+              "continueOnFailure": {
+                "value": false
+              }
+            }
+          },
+          "nextAction": {
+            "name": "step_3",
+            "type": "BRANCH",
+            "valid": true,
+            "displayName": "¿Hay alertas?",
+            "settings": {
+              "conditions": [
+                [
+                  {
+                    "operator": "BOOLEAN_IS_TRUE",
+                    "firstValue": "{{step_2['hayAlertas']}}"
+                  }
+                ]
+              ],
+              "inputUiInfo": {}
+            },
+            "onSuccessAction": {
+              "name": "step_4",
+              "type": "PIECE",
+              "valid": true,
+              "displayName": "Enviar alerta de gestión",
+              "settings": {
+                "pieceName": "@activepieces/piece-gmail",
+                "pieceVersion": "~0.8.0",
+                "pieceType": "OFFICIAL",
+                "packageType": "REGISTRY",
+                "actionName": "send_email",
+                "input": {
+                  "auth": "{{connections['gmail']}}",
+                  "receiver": [
+                    "TU_CORREO@gmail.com"
+                  ],
+                  "subject": "CC · ALERTA — gestión de posiciones requerida",
+                  "body_text": "{{step_2['resumen']}}",
+                  "body_html": ""
+                },
+                "inputUiInfo": {},
+                "errorHandlingOptions": {
+                  "retryOnFailure": {
+                    "value": true
+                  },
+                  "continueOnFailure": {
+                    "value": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "valid": true,
+    "schemaVersion": "1"
+  },
+  "blogUrl": ""
+}
