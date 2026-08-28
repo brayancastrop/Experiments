@@ -1,0 +1,10 @@
+# The deterministic core (iv_rank, sizing, selector, scanner, config) and the
+# tests/example run on the Python 3.11+ standard library alone -- no installs
+# required. TOML config uses the stdlib `tomllib`.
+#
+# The dependency below is only needed when you implement a REAL Interactive
+# Brokers adapter behind options.broker.BrokerClient (the DRY win: connection,
+# market data and order plumbing are already solved by ib_async). It is left
+# commented out because this experiment ships no live-execution path.
+#
+# ib_async>=1.0.0

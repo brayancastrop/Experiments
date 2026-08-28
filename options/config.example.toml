@@ -1,0 +1,39 @@
+# Example wheel-engine configuration.
+# Load with: WheelConfig.from_toml("options/config.example.toml")
+# Every value below is a "rule" from the source strategy, made explicit.
+
+# --- entry gate (the star rule) ---
+iv_rank_threshold = 50.0   # only sell premium when IV Rank >= this
+iv_lookback_days  = 252    # ~1 trading year for the IV Rank window
+
+# --- contract selection ---
+target_delta       = 0.30  # sell puts/calls at |delta| up to ~0.30
+target_dte         = 30
+min_dte            = 25
+max_dte            = 45
+min_open_interest  = 100
+min_premium        = 0.10  # per share; * 100 for per-contract dollars
+strike_buffer_pct  = 0.05  # puts: keep strikes <= price * (1 + buffer)
+
+# --- hard limits (the LLM layer can never loosen these) ---
+allow_margin              = false  # cash-secured only
+max_new_contracts_per_run = 3
+max_contracts_per_symbol  = 1      # one contract/symbol keeps risk legible
+
+# Position-size ladder: concentrate while small, diversify once larger.
+# Each tier gives the max fraction of net liquidation for a single position.
+[[sizing_tiers]]
+min_net_liquidation = 0.0
+max_position_pct    = 0.20
+
+[[sizing_tiers]]
+min_net_liquidation = 25000.0
+max_position_pct    = 0.05
+
+# Per-symbol overrides (optional). Any omitted field falls back to the globals.
+[symbols.MSFT]
+target_delta     = 0.20   # be more conservative on this name
+max_position_pct = 0.03
+
+[symbols.KO]
+min_premium = 0.15
